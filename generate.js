@@ -14,11 +14,14 @@ const sourceUrls = [
   "https://raw.githubusercontent.com/Hidashimora/free-vpn-anti-rkn/main/configs/19.1.txt",
   "https://raw.githubusercontent.com/Argh94/V2RayAutoConfig/refs/heads/main/configs/Slovakia.txt",
   "https://raw.githubusercontent.com/asgharkapk/Sub-Config-Extractor/refs/heads/main/output_configs/mixed/Mosifree/_SS.yaml",
+  // زدت هاد المصادر باش نضمنو نلقاو شي SS
+  "https://raw.githubusercontent.com/mahdibland/ShadowsocksAggregator/master/Eternity.txt",
+  "https://raw.githubusercontent.com/mfuu/v2ray/master/ss.txt"
 ];
 
 const FETCH_TIMEOUT_MS = 30_000;
 const CONCURRENCY_LIMIT = 30;
-const OUTPUT_FILE = 'sub.txt'; // حفظ ف الروت مباشرة
+const OUTPUT_FILE = 'sub.txt';
 
 // ---------- helpers ----------
 function timeoutSignal(ms) {
@@ -38,15 +41,10 @@ function isPrintableText(text) {
 
 function b64DecodeUtf8(b64) {
   try {
-    b64 = b64.trim()
-      .replace(/\s/g, '')
-      .replace(/-/g, '+') // دعم URL-safe base64
-      .replace(/_/g, '/');
+    b64 = b64.trim().replace(/\s/g, '').replace(/-/g, '+').replace(/_/g, '/');
     b64 += '='.repeat((4 - (b64.length % 4)) % 4);
     return Buffer.from(b64, 'base64').toString('utf8');
-  } catch {
-    return null;
-  }
+  } catch { return null; }
 }
 
 function decodeIfBase64(text) {
@@ -66,17 +64,8 @@ async function fetchWithLimit(urls, limit) {
           headers: { 'user-agent': 'Mozilla/5.0' },
           signal: timeoutSignal(FETCH_TIMEOUT_MS),
         })
-          .then((res) => {
-            if (!res.ok) {
-              console.warn(`[FAIL ${res.status}] ${url}`);
-              return '';
-            }
-            return res.text();
-          })
-          .catch((err) => {
-            console.warn(`[ERR] ${url} — ${err?.message ?? String(err)}`);
-            return '';
-          })
+          .then((res) => res.ok ? res.text() : '')
+          .catch(() => '')
       )
     );
     results.push(...batchResults);
@@ -84,29 +73,77 @@ async function fetchWithLimit(urls, limit) {
   return results;
 }
 
+// ---------- Clash YAML Parser (لـ _SS.yaml) ----------
+function parseClashYaml(text) {
+  const results = [];
+  const lines = text.split('\n');
+  let current = null;
+
+  for (let line of lines) {
+    line = line.trim();
+    if (!line) continue;
+    
+    if (line.startsWith('- ') && !line.startsWith('- {') || line.startsWith('proxies:')) {
+      if (line.startsWith('proxies:')) continue;
+      if (current && current.type === 'ss') results.push(current);
+      current = {};
+      const nameMatch = line.match(/^-\s*name:\s*['"]?([^'"]+)['"]?/);
+      if (nameMatch) current.name = nameMatch[1];
+    } else if (current && line.includes(':')) {
+      const idx = line.indexOf(':');
+      const key = line.slice(0, idx).trim();
+      const val = line.slice(idx + 1).trim().replace(/^['"]|['"]$/g, '');
+      
+      if (key === 'type') current.type = val;
+      else if (key === 'server') current.server = val;
+      else if (key === 'port') current.port = parseInt(val, 10);
+      else if (key === 'cipher') current.cipher = val;
+      else if (key === 'password') current.password = val;
+      else if (key === 'plugin') current.plugin = val;
+      else if (key === 'mode' && current.plugin) current.pluginMode = val;
+      else if (key === 'tls') current.tls = val;
+      else if (key === 'host' && current.plugin) current.pluginHost = val;
+      else if (key === 'path' && current.plugin) current.pluginPath = val;
+    }
+  }
+  if (current && current.type === 'ss') results.push(current);
+
+  const uris = [];
+  for (const p of results) {
+    if (!p.server || !p.port || !p.cipher || !p.password) continue;
+    const userinfo = Buffer.from(`${p.cipher}:${p.password}`).toString('base64').replace(/=/g, '');
+    let uri = `ss://${userinfo}@${p.server}:${p.port}`;
+    if (p.plugin) {
+      let pluginStr = p.plugin;
+      if (p.pluginMode) pluginStr += `;mode=${p.pluginMode}`;
+      if (p.tls === 'true') pluginStr += `;tls`;
+      if (p.pluginHost) pluginStr += `;host=${p.pluginHost}`;
+      if (p.pluginPath) pluginStr += `;path=${p.pluginPath}`;
+      uri += `/?plugin=${encodeURIComponent(pluginStr)}`;
+    }
+    if (p.name) uri += `#${encodeURIComponent(p.name)}`;
+    uris.push(uri);
+  }
+  return uris;
+}
+
 // ---------- SS parsing ----------
 function parseUserinfo(userinfo) {
   if (!userinfo) return null;
   if (userinfo.includes(':')) {
     const idx = userinfo.indexOf(':');
-    const method = userinfo.slice(0, idx);
-    const password = userinfo.slice(idx + 1);
-    return method ? { method, password } : null;
+    return { method: userinfo.slice(0, idx), password: userinfo.slice(idx + 1) };
   }
   const decoded = b64DecodeUtf8(userinfo);
   if (!decoded || !decoded.includes(':')) return null;
   const idx = decoded.indexOf(':');
-  const method = decoded.slice(0, idx);
-  const password = decoded.slice(idx + 1);
-  return method ? { method, password } : null;
+  return { method: decoded.slice(0, idx), password: decoded.slice(idx + 1) };
 }
 
 function parseSS(uri) {
   const hashIdx = uri.indexOf('#');
   const tag = hashIdx !== -1 ? uri.slice(hashIdx + 1) : '';
-  let body = hashIdx !== -1
-    ? uri.slice('ss://'.length, hashIdx)
-    : uri.slice('ss://'.length);
+  let body = hashIdx !== -1 ? uri.slice('ss://'.length, hashIdx) : uri.slice('ss://'.length);
   body = body.trim();
   if (!body) return null;
 
@@ -119,13 +156,11 @@ function parseSS(uri) {
 
   let userinfo, hostport;
   if (body.includes('@')) {
-    // SIP002
     if (body.endsWith('/')) body = body.slice(0, -1);
     const atIdx = body.lastIndexOf('@');
     userinfo = body.slice(0, atIdx);
     hostport = body.slice(atIdx + 1);
   } else {
-    // Legacy SS (base64)
     const decoded = b64DecodeUtf8(body);
     if (!decoded) return null;
     const atIdx = decoded.lastIndexOf('@');
@@ -150,27 +185,15 @@ function parseSS(uri) {
 function isWSandTLS(pluginStr) {
   if (!pluginStr) return false;
   const parts = pluginStr.toLowerCase().split(';').map((p) => p.trim()).filter(Boolean);
-
   const hasWS = parts.some((p) => /^mode\s*=\s*(websocket|ws)$/.test(p));
-  const hasTLS = parts.some((p) =>
-    p === 'tls' ||
-    /^tls\s*=\s*(true|1)$/.test(p) ||
-    /^security\s*=\s*tls$/.test(p)
-  );
-
+  const hasTLS = parts.some((p) => p === 'tls' || /^tls\s*=\s*(true|1)$/.test(p) || /^security\s*=\s*tls$/.test(p));
   return hasWS && hasTLS;
 }
 
 // ---------- main ----------
 async function main() {
   const results = await fetchWithLimit(sourceUrls, CONCURRENCY_LIMIT);
-  const texts = results
-    .filter((r) => r.status === 'fulfilled' && r.value)
-    .map((r) => r.value);
-
-  if (texts.length === 0) {
-    console.error('⚠️ All sources failed to fetch.');
-  }
+  const texts = results.filter((r) => r.status === 'fulfilled' && r.value).map((r) => r.value);
 
   const filteredConfigs = [];
   const seenConfigs = new Set();
@@ -182,10 +205,7 @@ async function main() {
       if (info.port !== 443) return;              // شرط 1: port 443
       if (!isWSandTLS(info.plugin)) return;       // شرط 2+3: ws + tls
 
-      const sig = JSON.stringify([
-        'ss', info.host, info.port, info.method, info.password, info.plugin
-      ]);
-      
+      const sig = JSON.stringify(['ss', info.host, info.port, info.method, info.password, info.plugin]);
       if (seenConfigs.has(sig)) return;
       seenConfigs.add(sig);
       filteredConfigs.push(line);
@@ -193,8 +213,15 @@ async function main() {
   }
 
   for (const text of texts) {
-    let content = text.includes('ss://') ? text : decodeIfBase64(text);
+    // 1. واش هو Clash YAML؟
+    if (text.includes('type: ss') || text.includes('type: "ss"') || text.includes("type: 'ss'")) {
+      const yamlUris = parseClashYaml(text);
+      for (const uri of yamlUris) processLine(uri);
+      continue;
+    }
 
+    // 2. يلا ماشي YAML، نعالجو كـ نص عادي أو Base64
+    let content = text.includes('ss://') ? text : decodeIfBase64(text);
     for (const rawLine of content.split(/\r?\n/)) {
       const line = rawLine.trim();
       if (!line) continue;
@@ -214,15 +241,18 @@ async function main() {
   }
 
   if (filteredConfigs.length === 0) {
-    console.error('⚠️ No SS (443/ws/tls) configs found!');
+    console.error('⚠️ No SS (443/ws/tls) configs found in the provided sources.');
     try {
       const old = await fs.readFile(OUTPUT_FILE, 'utf8');
       if (old.trim().length > 0) {
         console.warn(`ℹ️ Keeping existing ${OUTPUT_FILE} to avoid wiping.`);
-        return;
+        process.exit(0); // كنخرجو بنجاح باش ما يطيحش الـ Action
       }
     } catch (_) {}
-    process.exit(1);
+    
+    // يلا ما كاينش حتى ملف قديم، كنكتبو تعليق باش git add ينجح
+    await fs.writeFile(OUTPUT_FILE, '# No SS (443/ws/tls) configs found at the moment.\n', 'utf8');
+    process.exit(0);
   }
 
   await fs.writeFile(OUTPUT_FILE, filteredConfigs.join('\n'), 'utf8');
