@@ -18,7 +18,7 @@ const sourceUrls = [
 
 const FETCH_TIMEOUT_MS = 30_000;
 const CONCURRENCY_LIMIT = 30;
-const OUTPUT_FILE = 'ss/sub.txt';
+const OUTPUT_FILE = 'sub.txt'; // حفظ ف الروت مباشرة
 
 // ---------- helpers ----------
 function timeoutSignal(ms) {
@@ -38,8 +38,10 @@ function isPrintableText(text) {
 
 function b64DecodeUtf8(b64) {
   try {
-    b64 = b64.trim().replace(/\s/g, '')
-      .replace(/-/g, '+').replace(/_/g, '/');
+    b64 = b64.trim()
+      .replace(/\s/g, '')
+      .replace(/-/g, '+') // دعم URL-safe base64
+      .replace(/_/g, '/');
     b64 += '='.repeat((4 - (b64.length % 4)) % 4);
     return Buffer.from(b64, 'base64').toString('utf8');
   } catch {
@@ -51,7 +53,6 @@ function decodeIfBase64(text) {
   if (!text) return text;
   const decoded = b64DecodeUtf8(text);
   if (!decoded || !isPrintableText(decoded)) return text;
-  // غير كنقبلو النتيجة إلا كانت فيها ss://
   return decoded.includes('ss://') ? decoded : text;
 }
 
@@ -86,14 +87,12 @@ async function fetchWithLimit(urls, limit) {
 // ---------- SS parsing ----------
 function parseUserinfo(userinfo) {
   if (!userinfo) return null;
-  // SIP002: plain method:password
   if (userinfo.includes(':')) {
     const idx = userinfo.indexOf(':');
     const method = userinfo.slice(0, idx);
     const password = userinfo.slice(idx + 1);
     return method ? { method, password } : null;
   }
-  // SIP002: base64(method:password)
   const decoded = b64DecodeUtf8(userinfo);
   if (!decoded || !decoded.includes(':')) return null;
   const idx = decoded.indexOf(':');
@@ -117,16 +116,16 @@ function parseSS(uri) {
     query = body.slice(qIdx + 1);
     body = body.slice(0, qIdx);
   }
-  if (body.endsWith('/')) body = body.slice(0, -1);
 
   let userinfo, hostport;
   if (body.includes('@')) {
     // SIP002
+    if (body.endsWith('/')) body = body.slice(0, -1);
     const atIdx = body.lastIndexOf('@');
     userinfo = body.slice(0, atIdx);
     hostport = body.slice(atIdx + 1);
   } else {
-    // legacy: base64(method:password@host:port)
+    // Legacy SS (base64)
     const decoded = b64DecodeUtf8(body);
     if (!decoded) return null;
     const atIdx = decoded.lastIndexOf('@');
@@ -151,8 +150,14 @@ function parseSS(uri) {
 function isWSandTLS(pluginStr) {
   if (!pluginStr) return false;
   const parts = pluginStr.toLowerCase().split(';').map((p) => p.trim()).filter(Boolean);
-  const hasWS  = parts.some((p) => /^mode\s*=\s*(websocket|ws)$/.test(p));
-  const hasTLS = parts.some((p) => p === 'tls' || /^tls\s*=\s*(true|1)$/.test(p));
+
+  const hasWS = parts.some((p) => /^mode\s*=\s*(websocket|ws)$/.test(p));
+  const hasTLS = parts.some((p) =>
+    p === 'tls' ||
+    /^tls\s*=\s*(true|1)$/.test(p) ||
+    /^security\s*=\s*tls$/.test(p)
+  );
+
   return hasWS && hasTLS;
 }
 
@@ -177,7 +182,10 @@ async function main() {
       if (info.port !== 443) return;              // شرط 1: port 443
       if (!isWSandTLS(info.plugin)) return;       // شرط 2+3: ws + tls
 
-      const sig = `ss|${info.host}|${info.port}|${info.method}|${info.password}|${info.plugin}`;
+      const sig = JSON.stringify([
+        'ss', info.host, info.port, info.method, info.password, info.plugin
+      ]);
+      
       if (seenConfigs.has(sig)) return;
       seenConfigs.add(sig);
       filteredConfigs.push(line);
@@ -185,10 +193,8 @@ async function main() {
   }
 
   for (const text of texts) {
-    // 1) يلا الـ raw ماشي فيه ss:// نحاولو نفكوه بالكامل
     let content = text.includes('ss://') ? text : decodeIfBase64(text);
 
-    // 2) نمشيو سطر بسطر (مع محاولة per-line decode)
     for (const rawLine of content.split(/\r?\n/)) {
       const line = rawLine.trim();
       if (!line) continue;
@@ -219,7 +225,6 @@ async function main() {
     process.exit(1);
   }
 
-  await fs.mkdir('ss', { recursive: true });
   await fs.writeFile(OUTPUT_FILE, filteredConfigs.join('\n'), 'utf8');
   console.log(`✅ Saved ${filteredConfigs.length} SS (443/ws/tls) configs to ${OUTPUT_FILE}`);
 }
