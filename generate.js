@@ -12,7 +12,10 @@ const FETCH_TIMEOUT_MS = 30_000;
 const CONCURRENCY_LIMIT = 30;
 const OUTPUT_FILE = 'sub.txt';
 
-// دومينات كنستعملوها باش نستخرجو منها IPs (غالباً Cloudflare anycast)
+// المنافذ المسموحة
+const ALLOWED_PORTS = new Set(['443', '8443']);
+
+// دومينات كنستخرجو منها IPs (غالباً Cloudflare anycast)
 const SNI_LIST = [
   "api.server.io",
   "canary-proxsee-cf.pscp.tv",
@@ -85,31 +88,36 @@ async function buildIpPool(domains) {
   return [...ips];
 }
 
-// نبدلو الـ host (IP/domain) بـ IP جديد، مع الحفاظ على UUID، port، query، fragment
+// نبدلو العنوان (host أو IP) بـ IP جديد، مع الحفاظ على UUID، port، query، fragment
 function replaceAddressWithIp(uri, newIp) {
-  // vless://uuid@host:port?...#...   =>   vless://uuid@NEWIP:port?...#...
   return uri.replace(
     /^(vless:\/\/[^@]+@)([^:\/?#]+)(:\d+)/,
     (_m, p1, _oldHost, p3) => `${p1}${newIp}${p3}`
   );
 }
 
-// ---------- VLESS Filter & Modifier ----------
+// ---------- VLESS WS/TLS Filter & Modifier ----------
 function processVless(uri, ipPool) {
   try {
     if (!uri.startsWith('vless://')) return null;
 
-    // 1. المنفذ خاصو يكون 443
+    // 1. المنفذ خاصو يكون 443 أو 8443
     const portMatch = uri.match(/@[^:]+:(\d+)/);
-    if (!portMatch || portMatch[1] !== '443') return null;
+    if (!portMatch || !ALLOWED_PORTS.has(portMatch[1])) return null;
 
-    // 2. النوع reality
-    if (!uri.includes('security=reality')) return null;
+    // 2. النوع WS  (type=ws أو network=ws)
+    const isWs =
+      /[?&](?:type|network)=ws(?:&|$)/.test(uri) ||
+      /[?&](?:type|network)=ws[&#]/.test(uri);
+    if (!isWs) return null;
 
-    // 3. إذا ما عندناش IPs، نرجّعو الرابط كيفما هو
+    // 3. الأمان TLS
+    if (!/[?&]security=tls(?:&|#|$)/.test(uri)) return null;
+
+    // 4. إذا ما عندناش IPs، نرجّعو الرابط كيفما هو
     if (!ipPool.length) return uri;
 
-    // 4. كنختارو IP عشوائي ونبدلو بيه العنوان
+    // 5. نختارو IP عشوائي ونبدلو بيه العنوان
     const randomIp = ipPool[Math.floor(Math.random() * ipPool.length)];
     return replaceAddressWithIp(uri, randomIp);
   } catch (_) {
@@ -119,7 +127,7 @@ function processVless(uri, ipPool) {
 
 // ---------- main ----------
 async function main() {
-  // نبنيو pool ديال IPs من الدومينات
+  // pool ديال IPs
   const ipPool = await buildIpPool(SNI_LIST);
   console.log(`ℹ️ Resolved ${ipPool.length} IP(s) from SNI_LIST`);
   if (!ipPool.length) {
@@ -143,10 +151,11 @@ async function main() {
     const matches = text.match(/vless:\/\/[^\s"'<>]+/g) || [];
 
     for (const uri of matches) {
-      // dedup على أساس UUID + pbk (قبل ما نبدلو IP)
-      const uuid = (uri.match(/vless:\/\/([^@]+)@/) || [])[1] || uri;
-      const pbk = (uri.match(/[?&]pbk=([^&]+)/) || [])[1] || '';
-      const dedupKey = `${uuid}|${pbk}`;
+      // dedup على أساس UUID + port + path (قبل تبديل IP)
+      const uuid = (uri.match(/vless:\/\/([^@]+)@/) || [])[1] || '';
+      const port = (uri.match(/@[^:]+:(\d+)/) || [])[1] || '';
+      const path = (uri.match(/[?&]path=([^&]+)/) || [])[1] || '';
+      const dedupKey = `${uuid}|${port}|${path}`;
       if (seenConfigs.has(dedupKey)) continue;
 
       const modifiedUri = processVless(uri, ipPool);
@@ -158,7 +167,7 @@ async function main() {
   }
 
   if (filteredConfigs.length === 0) {
-    console.error('⚠️ No VLESS (443/reality) configs found in the provided sources.');
+    console.error('⚠️ No VLESS (WS/TLS on 443 or 8443) configs found in the provided sources.');
     try {
       const old = await fs.readFile(OUTPUT_FILE, 'utf8');
       if (old.trim().length > 0) {
@@ -169,7 +178,7 @@ async function main() {
 
     await fs.writeFile(
       OUTPUT_FILE,
-      '# No VLESS (443/reality) configs found at the moment.\n',
+      '# No VLESS (WS/TLS on 443 or 8443) configs found at the moment.\n',
       'utf8'
     );
     process.exit(0);
@@ -177,7 +186,7 @@ async function main() {
 
   await fs.writeFile(OUTPUT_FILE, filteredConfigs.join('\n'), 'utf8');
   console.log(
-    `✅ Saved ${filteredConfigs.length} VLESS (443/reality) configs with random IP (SNI untouched) to ${OUTPUT_FILE}`
+    `✅ Saved ${filteredConfigs.length} VLESS WS/TLS (443/8443) configs with random IP (SNI untouched) to ${OUTPUT_FILE}`
   );
 }
 
