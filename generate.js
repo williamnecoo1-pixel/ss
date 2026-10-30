@@ -1,23 +1,24 @@
 const fs = require('fs/promises');
+const dns = require('dns').promises;
 
 const sourceUrls = [
   "https://github.com/barry-far/V2ray-Config/raw/refs/heads/main/All_Configs_Sub.txt",
-     "https://raw.githubusercontent.com/MustafaBaqer/VestraNet-Nodes/refs/heads/main/subscriptions/mix-normal.txt",
-     "https://raw.githubusercontent.com/MohammadBahemmat/V2ray-Collector/refs/heads/main/all_servers.txt",
-     "https://raw.githubusercontent.com/0xRadikal/Free-v2ray-Configs/refs/heads/main/all/configs.txt",
+  "https://raw.githubusercontent.com/MustafaBaqer/VestraNet-Nodes/refs/heads/main/subscriptions/mix-normal.txt",
+  "https://raw.githubusercontent.com/MohammadBahemmat/V2ray-Collector/refs/heads/main/all_servers.txt",
+  "https://raw.githubusercontent.com/0xRadikal/Free-v2ray-Configs/refs/heads/main/all/configs.txt",
 ];
 
 const FETCH_TIMEOUT_MS = 30_000;
 const CONCURRENCY_LIMIT = 30;
 const OUTPUT_FILE = 'sub.txt';
 
-// قائمة الـ SNI التي سيتم الاختيار منها عشوائياً
+// دومينات كنستعملوها باش نستخرجو منها IPs (غالباً Cloudflare anycast)
 const SNI_LIST = [
   "api.server.io",
   "canary-proxsee-cf.pscp.tv",
   "game01.circus.nl",
   "x.com",
-  "www.getlucky.com"
+  "www.getlucky.com",
 ];
 
 // ---------- helpers ----------
@@ -61,7 +62,7 @@ async function fetchWithLimit(urls, limit) {
           headers: { 'user-agent': 'Mozilla/5.0' },
           signal: timeoutSignal(FETCH_TIMEOUT_MS),
         })
-          .then((res) => res.ok ? res.text() : '')
+          .then((res) => (res.ok ? res.text() : ''))
           .catch(() => '')
       )
     );
@@ -70,39 +71,47 @@ async function fetchWithLimit(urls, limit) {
   return results;
 }
 
+// ---------- IP pool ----------
+async function buildIpPool(domains) {
+  const ips = new Set();
+  await Promise.allSettled(
+    domains.map(async (d) => {
+      try {
+        const addrs = await dns.lookup(d, { family: 4, all: true });
+        for (const a of addrs) if (a?.address) ips.add(a.address);
+      } catch (_) {}
+    })
+  );
+  return [...ips];
+}
+
+// نبدلو الـ host (IP/domain) بـ IP جديد، مع الحفاظ على UUID، port، query، fragment
+function replaceAddressWithIp(uri, newIp) {
+  // vless://uuid@host:port?...#...   =>   vless://uuid@NEWIP:port?...#...
+  return uri.replace(
+    /^(vless:\/\/[^@]+@)([^:\/?#]+)(:\d+)/,
+    (_m, p1, _oldHost, p3) => `${p1}${newIp}${p3}`
+  );
+}
+
 // ---------- VLESS Filter & Modifier ----------
-function processVless(uri) {
+function processVless(uri, ipPool) {
   try {
     if (!uri.startsWith('vless://')) return null;
 
-    // 1. التحقق من أن المنفذ هو 443
+    // 1. المنفذ خاصو يكون 443
     const portMatch = uri.match(/@[^:]+:(\d+)/);
     if (!portMatch || portMatch[1] !== '443') return null;
 
-    // 2. التحقق من أن النوع reality
+    // 2. النوع reality
     if (!uri.includes('security=reality')) return null;
 
-    // 3. اختيار SNI عشوائي
-    const randomSni = SNI_LIST[Math.floor(Math.random() * SNI_LIST.length)];
+    // 3. إذا ما عندناش IPs، نرجّعو الرابط كيفما هو
+    if (!ipPool.length) return uri;
 
-    // 4. استبدال أو إضافة الـ SNI
-    let newUri = uri;
-    if (uri.match(/[?&]sni=/)) {
-      newUri = uri.replace(/([?&])sni=[^&]+/, `$1sni=${randomSni}`);
-    } else {
-      if (uri.includes('?')) {
-        newUri = uri.replace('?', `?sni=${randomSni}&`);
-      } else {
-        const hashIdx = newUri.indexOf('#');
-        if (hashIdx !== -1) {
-          newUri = newUri.slice(0, hashIdx) + `?sni=${randomSni}` + newUri.slice(hashIdx);
-        } else {
-          newUri = newUri + `?sni=${randomSni}`;
-        }
-      }
-    }
-
-    return newUri;
+    // 4. كنختارو IP عشوائي ونبدلو بيه العنوان
+    const randomIp = ipPool[Math.floor(Math.random() * ipPool.length)];
+    return replaceAddressWithIp(uri, randomIp);
   } catch (_) {
     return null;
   }
@@ -110,30 +119,37 @@ function processVless(uri) {
 
 // ---------- main ----------
 async function main() {
+  // نبنيو pool ديال IPs من الدومينات
+  const ipPool = await buildIpPool(SNI_LIST);
+  console.log(`ℹ️ Resolved ${ipPool.length} IP(s) from SNI_LIST`);
+  if (!ipPool.length) {
+    console.warn('⚠️ Could not resolve any IPs — addresses will stay unchanged.');
+  }
+
   const results = await fetchWithLimit(sourceUrls, CONCURRENCY_LIMIT);
-  const texts = results.filter((r) => r.status === 'fulfilled' && r.value).map((r) => r.value);
+  const texts = results
+    .filter((r) => r.status === 'fulfilled' && r.value)
+    .map((r) => r.value);
 
   const filteredConfigs = [];
   const seenConfigs = new Set();
 
   for (let text of texts) {
-    // فك التشفير إذا كان النص Base64
     if (!text.includes('vless://')) {
       const decoded = decodeIfBase64(text);
-      if (decoded && decoded.includes('vless://')) {
-        text = decoded;
-      }
+      if (decoded && decoded.includes('vless://')) text = decoded;
     }
 
-    // استخراج جميع روابط vless
     const matches = text.match(/vless:\/\/[^\s"'<>]+/g) || [];
 
     for (const uri of matches) {
-      // استخدام جزء من الرابط لمنع التكرار (UUID + Host + Port)
-      const dedupKey = uri.split('?')[0].split('#')[0];
+      // dedup على أساس UUID + pbk (قبل ما نبدلو IP)
+      const uuid = (uri.match(/vless:\/\/([^@]+)@/) || [])[1] || uri;
+      const pbk = (uri.match(/[?&]pbk=([^&]+)/) || [])[1] || '';
+      const dedupKey = `${uuid}|${pbk}`;
       if (seenConfigs.has(dedupKey)) continue;
 
-      const modifiedUri = processVless(uri);
+      const modifiedUri = processVless(uri, ipPool);
       if (modifiedUri) {
         seenConfigs.add(dedupKey);
         filteredConfigs.push(modifiedUri);
@@ -150,13 +166,19 @@ async function main() {
         process.exit(0);
       }
     } catch (_) {}
-    
-    await fs.writeFile(OUTPUT_FILE, '# No VLESS (443/reality) configs found at the moment.\n', 'utf8');
+
+    await fs.writeFile(
+      OUTPUT_FILE,
+      '# No VLESS (443/reality) configs found at the moment.\n',
+      'utf8'
+    );
     process.exit(0);
   }
 
   await fs.writeFile(OUTPUT_FILE, filteredConfigs.join('\n'), 'utf8');
-  console.log(`✅ Saved ${filteredConfigs.length} VLESS (443/reality) configs with random SNI to ${OUTPUT_FILE}`);
+  console.log(
+    `✅ Saved ${filteredConfigs.length} VLESS (443/reality) configs with random IP (SNI untouched) to ${OUTPUT_FILE}`
+  );
 }
 
 main().catch((err) => {
