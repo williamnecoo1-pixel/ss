@@ -1,28 +1,19 @@
 const fs = require('fs/promises');
-const dns = require('dns').promises;
 
 const sourceUrls = [
   "https://github.com/barry-far/V2ray-Config/raw/refs/heads/main/All_Configs_Sub.txt",
-  "https://raw.githubusercontent.com/MustafaBaqer/VestraNet-Nodes/refs/heads/main/subscriptions/mix-normal.txt",
-  "https://raw.githubusercontent.com/MohammadBahemmat/V2ray-Collector/refs/heads/main/all_servers.txt",
-  "https://raw.githubusercontent.com/0xRadikal/Free-v2ray-Configs/refs/heads/main/all/configs.txt",
+  "https://raw.githubusercontent.com/Maskkost93/kizyak-vpn-4.0/refs/heads/main/kizyakbeta6.txt",
+  "https://raw.githubusercontent.com/nyeinkokoaung404/V2ray-Configs/main/Splitted-By-Protocol/ss.txt",
+  "https://raw.githubusercontent.com/svinakraft-maker/FlareFeed/main/public/Top500.txt",
 ];
 
 const FETCH_TIMEOUT_MS = 30_000;
 const CONCURRENCY_LIMIT = 30;
 const OUTPUT_FILE = 'sub.txt';
 
-// المنافذ المسموحة
-const ALLOWED_PORTS = new Set(['443', '8443']);
-
-// دومينات كنستخرجو منها IPs (غالباً Cloudflare anycast)
-const SNI_LIST = [
-  "api.server.io",
-  "canary-proxsee-cf.pscp.tv",
-  "game01.circus.nl",
-  "x.com",
-  "www.getlucky.com",
-];
+// ✅ الثوابت الجديدة
+const TARGET_IP = "104.18.37.127"; 
+const ALLOWED_PORTS = new Set(['443']); 
 
 // ---------- helpers ----------
 function timeoutSignal(ms) {
@@ -74,52 +65,36 @@ async function fetchWithLimit(urls, limit) {
   return results;
 }
 
-// ---------- IP pool ----------
-async function buildIpPool(domains) {
-  const ips = new Set();
-  await Promise.allSettled(
-    domains.map(async (d) => {
-      try {
-        const addrs = await dns.lookup(d, { family: 4, all: true });
-        for (const a of addrs) if (a?.address) ips.add(a.address);
-      } catch (_) {}
-    })
-  );
-  return [...ips];
-}
-
 // نبدلو العنوان (host أو IP) بـ IP جديد، مع الحفاظ على UUID، port، query، fragment
 function replaceAddressWithIp(uri, newIp) {
+  // هذا الـ Regex كيلقط الجزء ديال host/IP وكيبدلو
   return uri.replace(
     /^(vless:\/\/[^@]+@)([^:\/?#]+)(:\d+)/,
     (_m, p1, _oldHost, p3) => `${p1}${newIp}${p3}`
   );
 }
 
-// ---------- VLESS WS/TLS Filter & Modifier ----------
-function processVless(uri, ipPool) {
+// ---------- VLESS Filter & Modifier ----------
+function processVless(uri) {
   try {
     if (!uri.startsWith('vless://')) return null;
 
-    // 1. المنفذ خاصو يكون 443 أو 8443
+    // 1. المنفذ خاصو يكون 443
     const portMatch = uri.match(/@[^:]+:(\d+)/);
     if (!portMatch || !ALLOWED_PORTS.has(portMatch[1])) return null;
 
-    // 2. النوع WS  (type=ws أو network=ws)
-    const isWs =
-      /[?&](?:type|network)=ws(?:&|$)/.test(uri) ||
-      /[?&](?:type|network)=ws[&#]/.test(uri);
-    if (!isWs) return null;
+    // 2. النوع خاصو يكون WS أو gRPC
+    // الكود كيقلب على type=ws أو type=grpc أو network=ws أو network=grpc
+    const isWsOrGrpc = 
+      /[?&](?:type|network)=(ws|grpc)(?:&|#|$)/i.test(uri);
+
+    if (!isWsOrGrpc) return null;
 
     // 3. الأمان TLS
-    if (!/[?&]security=tls(?:&|#|$)/.test(uri)) return null;
+    if (!/[?&]security=tls(?:&|#|$)/i.test(uri)) return null;
 
-    // 4. إذا ما عندناش IPs، نرجّعو الرابط كيفما هو
-    if (!ipPool.length) return uri;
-
-    // 5. نختارو IP عشوائي ونبدلو بيه العنوان
-    const randomIp = ipPool[Math.floor(Math.random() * ipPool.length)];
-    return replaceAddressWithIp(uri, randomIp);
+    // 4. نبدلو العنوان بـ TARGET_IP
+    return replaceAddressWithIp(uri, TARGET_IP);
   } catch (_) {
     return null;
   }
@@ -127,12 +102,8 @@ function processVless(uri, ipPool) {
 
 // ---------- main ----------
 async function main() {
-  // pool ديال IPs
-  const ipPool = await buildIpPool(SNI_LIST);
-  console.log(`ℹ️ Resolved ${ipPool.length} IP(s) from SNI_LIST`);
-  if (!ipPool.length) {
-    console.warn('⚠️ Could not resolve any IPs — addresses will stay unchanged.');
-  }
+  console.log(`ℹ️ Target IP will be forced to: ${TARGET_IP}`);
+  console.log(`ℹ️ Collecting VLESS WS/gRPC TLS on port(s): ${[...ALLOWED_PORTS].join(', ')}`);
 
   const results = await fetchWithLimit(sourceUrls, CONCURRENCY_LIMIT);
   const texts = results
@@ -155,10 +126,12 @@ async function main() {
       const uuid = (uri.match(/vless:\/\/([^@]+)@/) || [])[1] || '';
       const port = (uri.match(/@[^:]+:(\d+)/) || [])[1] || '';
       const path = (uri.match(/[?&]path=([^&]+)/) || [])[1] || '';
-      const dedupKey = `${uuid}|${port}|${path}`;
+      const serviceName = (uri.match(/[?&]serviceName=([^&]+)/) || [])[1] || ''; // لـ gRPC
+      
+      const dedupKey = `${uuid}|${port}|${path}|${serviceName}`;
       if (seenConfigs.has(dedupKey)) continue;
 
-      const modifiedUri = processVless(uri, ipPool);
+      const modifiedUri = processVless(uri);
       if (modifiedUri) {
         seenConfigs.add(dedupKey);
         filteredConfigs.push(modifiedUri);
@@ -167,7 +140,7 @@ async function main() {
   }
 
   if (filteredConfigs.length === 0) {
-    console.error('⚠️ No VLESS (WS/TLS on 443 or 8443) configs found in the provided sources.');
+    console.error('⚠️ No VLESS (WS/gRPC, TLS, on port 443) configs found in the provided sources.');
     try {
       const old = await fs.readFile(OUTPUT_FILE, 'utf8');
       if (old.trim().length > 0) {
@@ -178,7 +151,7 @@ async function main() {
 
     await fs.writeFile(
       OUTPUT_FILE,
-      '# No VLESS (WS/TLS on 443 or 8443) configs found at the moment.\n',
+      '# No VLESS (WS/gRPC, TLS, on port 443) configs found at the moment.\n',
       'utf8'
     );
     process.exit(0);
@@ -186,7 +159,7 @@ async function main() {
 
   await fs.writeFile(OUTPUT_FILE, filteredConfigs.join('\n'), 'utf8');
   console.log(
-    `✅ Saved ${filteredConfigs.length} VLESS WS/TLS (443/8443) configs with random IP (SNI untouched) to ${OUTPUT_FILE}`
+    `✅ Saved ${filteredConfigs.length} VLESS WS/gRPC TLS configs with IP ${TARGET_IP} to ${OUTPUT_FILE}`
   );
 }
 
