@@ -1,35 +1,8 @@
 const fs = require('fs/promises');
 
 const sourceUrls = [
-  "https://github.com/barry-far/V2ray-Config/raw/refs/heads/main/All_Configs_Sub.txt",
-  "https://raw.githubusercontent.com/Maskkost93/kizyak-vpn-4.0/refs/heads/main/kizyakbeta6.txt",
-  "https://raw.githubusercontent.com/nyeinkokoaung404/V2ray-Configs/main/Splitted-By-Protocol/ss.txt",
-  "https://raw.githubusercontent.com/svinakraft-maker/FlareFeed/main/public/Top500.txt",
-  "https://raw.githubusercontent.com/pctaha501-create/FreeVPN-Subscription-Mirror/main/output/v2ray-base64.txt",
-  "https://raw.githubusercontent.com/asgharkapk/Sub-Config-Extractor/refs/heads/main/output_configs/mixed/vpnclashfa-backup/SubConfigShuffler/10ium_V2Hub_merged_cloudflare.txt.yaml",
-  "https://raw.githubusercontent.com/asgharkapk/Sub-Config-Extractor/refs/heads/main/output_configs/ss/10ium/V2Hub3/merged_base64.yaml",
-  "https://raw.githubusercontent.com/pie-with-jam/PulseProxy/main/githubmirror/15.txt",
-  "https://raw.githubusercontent.com/MohammadBahemmat/V2ray-Collector/main/servers/vless_servers.txt",
-  "https://raw.githubusercontent.com/Au1rxx/free-vpn-subscriptions/main/output/v2ray-base64.txt",
-  "https://raw.githubusercontent.com/amir-reza-bijandi/v2ray-configs/main/configs.txt",
-  "https://raw.githubusercontent.com/10Dream/sub-mod/main/sub/base64/split/countries/PL.txt",
-  "https://raw.githubusercontent.com/alirzza9/ConfigsHUB-VLESS/HEAD/sub/vless-all.txt",
-  "https://raw.githubusercontent.com/10Dream/sub-mod/main/sub/split/countries/TW.txt",
-  "https://raw.githubusercontent.com/lorenzazy7kenyon/free-vpn-subscriptions/main/output/by-country/v2ray-base64-RO.txt",
-  "https://raw.githubusercontent.com/hamedcode/port-based-v2ray-configs/main/detailed/vmess/80.txt",
-  "https://raw.githubusercontent.com/morpheusadam/v2ray-config/main/subs/bundles/vmess.txt",
-  "https://raw.githubusercontent.com/10Dream/sub-mod/main/sub/split/countries/IL.txt",
-  "https://raw.githubusercontent.com/10Dream/sub-mod/main/sub/base64/split/countries/IL.txt",
-  "https://raw.githubusercontent.com/pie-with-jam/5ubscrpt10n-Reborn/main/mini/m1n1-5ub-31.txt",
-  "https://raw.githubusercontent.com/TheCrowCreature/v2rayExtractor/refs/heads/main/ss.html",
-  "https://raw.githubusercontent.com/10Dream/sub-mod/main/sub/normal/kaveh_donations",
-  "https://raw.githubusercontent.com/10ium/ScrapeAndCategorize/refs/heads/main/output_configs/Lithuania.txt",
-  "https://raw.githubusercontent.com/drmikecrypto/PulseConfigs/HEAD/fast/configs.txt",
-  "https://raw.githubusercontent.com/Maskkost93/kizyak-vpn-4.0/refs/heads/main/kizyakbeta6BL.txt",
-  "https://raw.githubusercontent.com/yafeisun/v2raynode/refs/heads/main/result/karing.txt",
-  "https://raw.githubusercontent.com/rango-cfs/NewCollector/refs/heads/main/v2ray_links.txt",
-  "https://raw.githubusercontent.com/Agumuzi/crhopper/main/CR-Hopper.txt",
-  "https://raw.githubusercontent.com/cyrusalbert/ArashOnline/refs/heads/main/lowest.txt",
+  
+  "https://raw.githubusercontent.com/ashah404/V2rayCollector/refs/heads/main/subscribe/layers/ipv4",
 ];
 
 const FETCH_TIMEOUT_MS = 30_000;
