@@ -12,7 +12,7 @@ const sourceUrls = [
   "https://raw.githubusercontent.com/MohammadBahemmat/V2ray-Collector/main/servers/vless_servers.txt",
   "https://raw.githubusercontent.com/Au1rxx/free-vpn-subscriptions/main/output/v2ray-base64.txt",
   "https://raw.githubusercontent.com/amir-reza-bijandi/v2ray-configs/main/configs.txt",
-  "https://raw.githubusercontent.com/10Dream/sub-mod/main/sub/base64/split/countries/PL.txt"
+  "https://raw.githubusercontent.com/10Dream/sub-mod/main/sub/base64/split/countries/PL.txt",
   "https://raw.githubusercontent.com/alirzza9/ConfigsHUB-VLESS/HEAD/sub/vless-all.txt",
   "https://raw.githubusercontent.com/10Dream/sub-mod/main/sub/split/countries/TW.txt",
   "https://raw.githubusercontent.com/lorenzazy7kenyon/free-vpn-subscriptions/main/output/by-country/v2ray-base64-RO.txt",
