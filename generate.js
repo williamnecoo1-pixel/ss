@@ -29,7 +29,7 @@ const sourceUrls = [
   "https://raw.githubusercontent.com/yafeisun/v2raynode/refs/heads/main/result/karing.txt",
   "https://raw.githubusercontent.com/rango-cfs/NewCollector/refs/heads/main/v2ray_links.txt",
   "https://raw.githubusercontent.com/Agumuzi/crhopper/main/CR-Hopper.txt",
-  "https://raw.githubusercontent.com/cyrusalbert/ArashOnline/refs/heads/main/lowest.txt"
+  "https://raw.githubusercontent.com/cyrusalbert/ArashOnline/refs/heads/main/lowest.txt",
 ];
 
 const FETCH_TIMEOUT_MS = 30_000;
