@@ -1,26 +1,23 @@
 const fs = require('fs/promises');
 
+// الليستة ديال الروابط ديالك
 const sourceUrls = [
-  
-  
-  "https://github.com/Delta-Kronecker/V2ray-Config/raw/refs/heads/main/config/all_configs.txt",
+    
+     
+     "https://github.com/Delta-Kronecker/V2ray-Config/raw/refs/heads/main/config/all_configs.txt",
     "https://raw.githubusercontent.com/mahdibland/V2RayAggregator/master/sub/sub_merge.txt",
     "https://raw.githubusercontent.com/IranianCypherpunks/sub/main/sub",
     "https://raw.githubusercontent.com/vfarid/v2ray-share/main/configs.txt",
     "https://raw.githubusercontent.com/iboxz/free-v2ray-collector/main/main/mix.txt",
     "https://raw.githubusercontent.com/Lidatong/v2ray_rules/master/all.txt",
   "https://raw.githubusercontent.com/ashah404/V2rayCollector/refs/heads/main/subscribe/layers/ipv4",
+     
+     
 ];
 
 const FETCH_TIMEOUT_MS = 30_000;
 const CONCURRENCY_LIMIT = 30;
-const OUTPUT_FILE = 'sub.txt';
 
-// ✅ الثوابت الجديدة
-const TARGET_IP = "104.18.37.127"; 
-const ALLOWED_PORTS = new Set(['443']); 
-
-// ---------- helpers ----------
 function timeoutSignal(ms) {
   if (typeof AbortSignal !== 'undefined' && typeof AbortSignal.timeout === 'function') {
     return AbortSignal.timeout(ms);
@@ -36,19 +33,39 @@ function isPrintableText(text) {
   return cleaned.length / text.length > 0.9;
 }
 
-function b64DecodeUtf8(b64) {
+function decodeIfBase64(text) {
   try {
-    b64 = b64.trim().replace(/\s/g, '').replace(/-/g, '+').replace(/_/g, '/');
-    b64 += '='.repeat((4 - (b64.length % 4)) % 4);
-    return Buffer.from(b64, 'base64').toString('utf8');
-  } catch { return null; }
+    const cleaned = text.trim().replace(/\s+/g, '');
+    const normalized = cleaned.replace(/-/g, '+').replace(/_/g, '/');
+    const padded = normalized.padEnd(Math.ceil(normalized.length / 4) * 4, '=');
+    const decoded = Buffer.from(padded, 'base64').toString('utf8');
+
+    if (!isPrintableText(decoded)) return text;
+
+    if (
+      decoded.includes('vless://') ||
+      decoded.includes('trojan://') ||
+      decoded.includes('vmess://')
+    ) {
+      return decoded;
+    }
+  } catch (_) {}
+
+  return text;
 }
 
-function decodeIfBase64(text) {
-  if (!text) return text;
-  const decoded = b64DecodeUtf8(text);
-  if (!decoded || !isPrintableText(decoded)) return text;
-  return decoded.includes('vless://') ? decoded : text;
+function b64DecodeUtf8(b64) {
+  try {
+    b64 = b64.trim().replace(/\s/g, '');
+    b64 += '='.repeat((4 - (b64.length % 4)) % 4);
+    return Buffer.from(b64, 'base64').toString('utf8');
+  } catch {
+    return null;
+  }
+}
+
+function b64EncodeUtf8(str) {
+  return Buffer.from(str, 'utf8').toString('base64');
 }
 
 async function fetchWithLimit(urls, limit) {
@@ -61,8 +78,17 @@ async function fetchWithLimit(urls, limit) {
           headers: { 'user-agent': 'Mozilla/5.0' },
           signal: timeoutSignal(FETCH_TIMEOUT_MS),
         })
-          .then((res) => (res.ok ? res.text() : ''))
-          .catch(() => '')
+          .then((res) => {
+            if (!res.ok) {
+              console.warn(`[FAIL ${res.status}] ${url}`);
+              return '';
+            }
+            return res.text();
+          })
+          .catch((err) => {
+            console.warn(`[ERR] ${url} — ${err?.message ?? String(err)}`);
+            return '';
+          })
       )
     );
     results.push(...batchResults);
@@ -70,102 +96,143 @@ async function fetchWithLimit(urls, limit) {
   return results;
 }
 
-// نبدلو العنوان (host أو IP) بـ IP جديد، مع الحفاظ على UUID، port، query، fragment
-function replaceAddressWithIp(uri, newIp) {
-  // هذا الـ Regex كيلقط الجزء ديال host/IP وكيبدلو
-  return uri.replace(
-    /^(vless:\/\/[^@]+@)([^:\/?#]+)(:\d+)/,
-    (_m, p1, _oldHost, p3) => `${p1}${newIp}${p3}`
-  );
-}
-
-// ---------- VLESS Filter & Modifier ----------
-function processVless(uri) {
-  try {
-    if (!uri.startsWith('vless://')) return null;
-
-    // 1. المنفذ خاصو يكون 443
-    const portMatch = uri.match(/@[^:]+:(\d+)/);
-    if (!portMatch || !ALLOWED_PORTS.has(portMatch[1])) return null;
-
-    // 2. النوع خاصو يكون WS أو gRPC
-    // الكود كيقلب على type=ws أو type=grpc أو network=ws أو network=grpc
-    const isWsOrGrpc = 
-      /[?&](?:type|network)=(ws|grpc)(?:&|#|$)/i.test(uri);
-
-    if (!isWsOrGrpc) return null;
-
-    // 3. الأمان TLS
-    if (!/[?&]security=tls(?:&|#|$)/i.test(uri)) return null;
-
-    // 4. نبدلو العنوان بـ TARGET_IP
-    return replaceAddressWithIp(uri, TARGET_IP);
-  } catch (_) {
-    return null;
-  }
-}
-
-// ---------- main ----------
 async function main() {
-  console.log(`ℹ️ Target IP will be forced to: ${TARGET_IP}`);
-  console.log(`ℹ️ Collecting VLESS WS/gRPC TLS on port(s): ${[...ALLOWED_PORTS].join(', ')}`);
-
   const results = await fetchWithLimit(sourceUrls, CONCURRENCY_LIMIT);
+
   const texts = results
     .filter((r) => r.status === 'fulfilled' && r.value)
     .map((r) => r.value);
 
-  const filteredConfigs = [];
-  const seenConfigs = new Set();
+  if (texts.length === 0) {
+    console.error('⚠️ All sources failed to fetch.');
+  }
 
-  for (let text of texts) {
-    if (!text.includes('vless://')) {
-      const decoded = decodeIfBase64(text);
-      if (decoded && decoded.includes('vless://')) text = decoded;
+  const filteredConfigs = [];
+  
+  // ============================================================
+  // Sets ديال الفلترة (Dedupe)
+  // ============================================================
+  const seenVless = new Set();
+  const seenVmess = new Set();
+  const seenTrojan = new Set();
+
+  for (const text of texts) {
+    let decodedText = text;
+
+    if (
+      !text.includes('vless://') &&
+      !text.includes('trojan://') &&
+      !text.includes('vmess://')
+    ) {
+      decodedText = decodeIfBase64(text);
     }
 
-    const matches = text.match(/vless:\/\/[^\s"'<>]+/g) || [];
+    const lines = decodedText.split(/\r?\n/);
 
-    for (const uri of matches) {
-      // dedup على أساس UUID + port + path (قبل تبديل IP)
-      const uuid = (uri.match(/vless:\/\/([^@]+)@/) || [])[1] || '';
-      const port = (uri.match(/@[^:]+:(\d+)/) || [])[1] || '';
-      const path = (uri.match(/[?&]path=([^&]+)/) || [])[1] || '';
-      const serviceName = (uri.match(/[?&]serviceName=([^&]+)/) || [])[1] || ''; // لـ gRPC
-      
-      const dedupKey = `${uuid}|${port}|${path}|${serviceName}`;
-      if (seenConfigs.has(dedupKey)) continue;
+    for (let line of lines) {
+      line = line.trim();
+      if (!line) continue;
 
-      const modifiedUri = processVless(uri);
-      if (modifiedUri) {
-        seenConfigs.add(dedupKey);
-        filteredConfigs.push(modifiedUri);
+      // ==========================================
+      // 1. VMess
+      // ==========================================
+      if (line.startsWith('vmess://')) {
+        try {
+          const cleanLine = line.split('#')[0];
+          const b64 = cleanLine.slice(8).trim();
+          const jsonStr = b64DecodeUtf8(b64);
+          if (!jsonStr) continue;
+
+          const config = JSON.parse(jsonStr);
+
+          if (
+            String(config.net || '').toLowerCase() !== 'ws' ||
+            String(config.tls || '').toLowerCase() !== 'tls' ||
+            parseInt(config.port, 10) !== 443
+          ) {
+            continue;
+          }
+
+          // ✅ فلترة التكرار حسب الـ ID فقط
+          const vmessId = String(config.id || '').toLowerCase().trim();
+          if (!vmessId || seenVmess.has(vmessId)) continue;
+          seenVmess.add(vmessId);
+
+          const server = String(config.add || '').toLowerCase().trim();
+          if (!server) continue;
+
+          // 🔵 كنحافظو على الـ host الأصلي كيفما هو (بلا تبديل)
+
+          filteredConfigs.push('vmess://' + b64EncodeUtf8(JSON.stringify(config)));
+        } catch (_) {}
+        continue;
       }
+
+      // ==========================================
+      // 2. VLESS / Trojan
+      // ==========================================
+      const cleanLine = line.split('#')[0].trim();
+      if (
+        !cleanLine.startsWith('vless://') &&
+        !cleanLine.startsWith('trojan://')
+      ) {
+        continue;
+      }
+
+      try {
+        const url = new URL(cleanLine);
+        const protocol = url.protocol.replace(':', '').toLowerCase();
+        const port = url.port === '' ? 443 : parseInt(url.port, 10);
+
+        if (
+          (protocol !== 'vless' && protocol !== 'trojan') ||
+          url.searchParams.get('type') !== 'ws' ||
+          url.searchParams.get('security') !== 'tls' ||
+          port !== 443
+        ) {
+          continue;
+        }
+
+        const username = url.username.toLowerCase().trim();
+        if (!username) continue;
+
+        // ✅ فلترة VLESS حسب الـ UUID فقط
+        if (protocol === 'vless') {
+          if (seenVless.has(username)) continue;
+          seenVless.add(username);
+        }
+
+        // ✅ فلترة Trojan حسب الـ Password فقط
+        if (protocol === 'trojan') {
+          if (seenTrojan.has(username)) continue;
+          seenTrojan.add(username);
+        }
+
+        // 🔵 كنحافظو على الـ hostname الأصلي كيفما هو (بلا تبديل)
+
+        let finalConfig = url.toString();
+        const originalRemark = line.split('#')[1];
+        if (originalRemark) finalConfig += `#${originalRemark}`;
+
+        filteredConfigs.push(finalConfig);
+      } catch (_) {}
     }
   }
 
   if (filteredConfigs.length === 0) {
-    console.error('⚠️ No VLESS (WS/gRPC, TLS, on port 443) configs found in the provided sources.');
+    console.error('⚠️ No configs found! All sources failed or filter too strict.');
     try {
-      const old = await fs.readFile(OUTPUT_FILE, 'utf8');
+      const old = await fs.readFile('sub.txt', 'utf8');
       if (old.trim().length > 0) {
-        console.warn(`ℹ️ Keeping existing ${OUTPUT_FILE} to avoid wiping.`);
-        process.exit(0);
+        console.warn('ℹ️ Keeping existing sub.txt to avoid wiping the subscription.');
+        return;
       }
     } catch (_) {}
-
-    await fs.writeFile(
-      OUTPUT_FILE,
-      '# No VLESS (WS/gRPC, TLS, on port 443) configs found at the moment.\n',
-      'utf8'
-    );
-    process.exit(0);
+    process.exit(1);
   }
 
-  await fs.writeFile(OUTPUT_FILE, filteredConfigs.join('\n'), 'utf8');
-  console.log(
-    `✅ Saved ${filteredConfigs.length} VLESS WS/gRPC TLS configs with IP ${TARGET_IP} to ${OUTPUT_FILE}`
-  );
+  await fs.writeFile('sub.txt', filteredConfigs.join('\n'), 'utf8');
+  console.log(`✅ Saved ${filteredConfigs.length} configs to sub.txt`);
 }
 
 main().catch((err) => {
